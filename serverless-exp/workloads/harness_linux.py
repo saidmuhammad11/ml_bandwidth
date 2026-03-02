@@ -1,25 +1,14 @@
-cat <<EOF > serverless-exp/workloads/harness_linux.py
-import argparse
-import json
-import os
-import subprocess
-import time
-import uuid
-import re
+import argparse, json, os, subprocess, time, uuid, re
 
-# --- PART 1: ENERGY READING ---
 def get_rapl_energy_mj():
-    # FIXED: Use the specific path for your i9-12900 inside Docker
     rapl_path = "/sys/devices/virtual/powercap/intel-rapl/intel-rapl:0/energy_uj"
     try:
         if os.path.exists(rapl_path):
             with open(rapl_path, 'r') as f:
                 return int(f.read().strip())
-    except Exception:
-        pass
+    except: pass
     return None
 
-# --- PART 2: PARSING TIME OUTPUT ---
 def parse_time_v(stderr_text):
     out = {}
     patterns = {
@@ -43,30 +32,22 @@ def parse_time_v(stderr_text):
             else: elapsed_s = float(parts[0])
         except: pass
 
-    # FIXED: Convert blocks to integers immediately
-    io_in = int(out.get("fs_in", 0))
-    io_out = int(out.get("fs_out", 0))
-
     return {
         "cpu_time_ms": (float(out.get("user_s", 0)) + float(out.get("sys_s", 0))) * 1000,
         "duration_ms": elapsed_s * 1000 if elapsed_s else None,
         "peak_rss_mb": int(out.get("max_rss_kb", 0)) / 1024.0,
-        "io_read_blocks": io_in,
-        "io_write_blocks": io_out
+        "io_read_blocks": int(out.get("fs_in", 0)),
+        "io_write_blocks": int(out.get("fs_out", 0))
     }
 
-# --- PART 3: RUNNING THE WORKLOAD ---
 def run_once(workload_cmd, meta):
     t0 = time.time()
-    
-    # Start Measurement
     e_start = get_rapl_energy_mj()
     
     cmd = ["/usr/bin/time", "-v"] + workload_cmd
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     out, err = p.communicate()
     
-    # End Measurement
     e_end = get_rapl_energy_mj()
     t1 = time.time()
     
@@ -74,16 +55,9 @@ def run_once(workload_cmd, meta):
     
     energy_joules = 0.0
     if e_start is not None and e_end is not None and e_end > e_start:
-         energy_joules = (e_end - e_start) / 1_000_000.0
+         energy_joules = (e_end - e_start) / 1e6
     
-    peak_rss = stats["peak_rss_mb"] or 0.0
-    
-    # FIXED: Convert 512-byte blocks to raw bytes
-    io_read_bytes = stats["io_read_blocks"] * 512
-    io_write_bytes = stats["io_write_blocks"] * 512
-
-    # Construct Record (Explicitly include all keys)
-    record = {
+    return {
         "platform": meta.get("platform", "docker_local"),
         "workload": meta.get("workload", "unknown"),
         "run_id": meta.get("run_id", "unknown"),
@@ -94,15 +68,13 @@ def run_once(workload_cmd, meta):
         "queue_delay_ms": 0,
         "duration_ms": stats["duration_ms"] or (t1-t0)*1000,
         "cpu_time_ms": stats["cpu_time_ms"],
-        "peak_rss_mb": peak_rss,
-        "rss_mb": peak_rss,
-        "io_read_bytes": io_read_bytes,
-        "io_write_bytes": io_write_bytes,
+        "peak_rss_mb": stats["peak_rss_mb"] or 0.0,
+        "rss_mb": stats["peak_rss_mb"] or 0.0,
+        "io_read_bytes": stats.get("io_read_blocks", 0) * 512,
+        "io_write_bytes": stats.get("io_write_blocks", 0) * 512,
         "energy_joules": energy_joules
     }
-    return record
 
-# --- PART 4: MAIN LOOP ---
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--workload", required=True)
@@ -113,7 +85,6 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(os.path.dirname(args.log), exist_ok=True)
-    
     cmd = ["python3", f"/app/workloads/{args.workload}.py"]
     run_id = str(uuid.uuid4())
 
@@ -128,14 +99,10 @@ def main():
                 "mem_limit_mb": args.mem_limit_mb,
                 "cold_start": (i % args.cold_every == 0)
             }
-            
             res = run_once(cmd, meta)
-            
             f.write(json.dumps(res) + "\n")
-            f.flush() # FIXED: Ensure data is saved immediately
-            
-            print(f"Run {i+1}: {res['energy_joules']:.4f} J | {res['duration_ms']:.2f} ms")
+            f.flush()
+            print(f"Run {i+1}: {res['energy_joules']:.4f} J")
 
 if __name__ == "__main__":
     main()
-EOF

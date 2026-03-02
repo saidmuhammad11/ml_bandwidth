@@ -9,7 +9,7 @@ from pathlib import Path
 
 # Option A: Process a single file (recommended for your case)
 INPUT_FILES = [
-    "histgbdtenable_cpuintensive1.json"
+    "mixed.json"
 ]
 
 # Option B: Process multiple files (uncomment and list them)
